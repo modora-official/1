@@ -93,7 +93,6 @@ const htmlPage = `
         const statusEl = document.getElementById('conn-status');
         const notifArea = document.getElementById('notif-area');
 
-        // FUNGSI LAYAR PENUH & LANDSCAPE
         function startGame() {
             let user = document.getElementById('usernameInput').value.trim();
             if(!user) return alert("Username nggak boleh kosong!");
@@ -101,7 +100,6 @@ const htmlPage = `
             let elem = document.documentElement;
             if (elem.requestFullscreen) { elem.requestFullscreen().catch(e => console.log(e)); }
             
-            // Kunci ke Landscape
             if(screen.orientation && screen.orientation.lock) {
                 screen.orientation.lock('landscape').catch(e => console.log(e));
             }
@@ -113,7 +111,6 @@ const htmlPage = `
             socket.emit('connectToTiktok', user);
         }
 
-        // FUNGSI NOTIFIKASI
         socket.on('notify', (data) => {
             const el = document.createElement('div');
             el.className = 'notif';
@@ -121,14 +118,12 @@ const htmlPage = `
             if(data.color) el.style.borderLeftColor = data.color;
             notifArea.appendChild(el);
             
-            // Hapus notif setelah 4 detik
             setTimeout(() => {
                 el.style.animation = 'slideOut 0.3s forwards';
                 setTimeout(() => el.remove(), 300);
             }, 4000);
         });
 
-        // STATUS KONEKSI
         socket.on('status', (data) => {
             if(data.type === 'online') {
                 statusEl.className = 'status online';
@@ -139,7 +134,6 @@ const htmlPage = `
             }
         });
 
-        // UPDATE BENDERA
         let prevScores = {};
         socket.on('updateData', (topFlags) => {
             board.innerHTML = ''; 
@@ -151,7 +145,6 @@ const htmlPage = `
                                index === 2 ? 'linear-gradient(90deg, #b45309, #fcd34d)' : 
                                'linear-gradient(90deg, #3b82f6, #60a5fa)';
 
-                // Efek mantul kalau skor nambah
                 let isBounce = prevScores[item.flag] && prevScores[item.flag] < item.score ? 'bounce' : '';
                 prevScores[item.flag] = item.score;
 
@@ -191,15 +184,14 @@ function getTop6() {
 
 io.on('connection', (socket) => {
     
-    // KONEKSI DIMULAI SAAT TOMBOL DI WEB DITEKAN
     socket.on('connectToTiktok', (username) => {
         if(activeConnection) { activeConnection.disconnect(); }
         
-        console.log(\`\n🔄 Nyoba konek ke: \${username}\`);
+        console.log(`\n🔄 Nyoba konek ke: ${username}`);
         activeConnection = new WebcastPushConnection(username, { enableExtendedGiftInfo: true });
 
         activeConnection.connect().then(state => {
-            console.info(\`✅ BERHASIL KONEK KE LIVE: \${state.roomInfo.owner.display_id}\`);
+            console.info(`✅ BERHASIL KONEK KE LIVE: ${state.roomInfo.owner.display_id}`);
             socket.emit('status', { type: 'online' });
             socket.emit('notify', { msg: '🎉 Berhasil terhubung ke Live!', color: '#22c55e' });
         }).catch(err => {
@@ -208,7 +200,6 @@ io.on('connection', (socket) => {
             socket.emit('notify', { msg: '❌ Gagal. Cek setting umur Live lu!', color: '#ef4444' });
         });
 
-        // TANGKAP KOMENTAR BENDERA
         activeConnection.on('chat', data => {
             let detectedFlags = data.comment.match(flagRegex);
             if (detectedFlags) {
@@ -224,21 +215,20 @@ io.on('connection', (socket) => {
             }
         });
 
-        // TANGKAP EVENT UNTUK NOTIFIKASI
         activeConnection.on('gift', data => {
-            socket.emit('notify', { msg: \`🎁 <b>\${data.uniqueId}</b> ngirim <b>\${data.giftName}</b>!\`, color: '#eab308' });
+            socket.emit('notify', { msg: `🎁 <b>${data.uniqueId}</b> ngirim <b>${data.giftName}</b>!`, color: '#eab308' });
         });
         
         activeConnection.on('like', data => {
-            socket.emit('notify', { msg: \`❤️ <b>\${data.uniqueId}</b> tap-tap layar!\`, color: '#ef4444' });
+            socket.emit('notify', { msg: `❤️ <b>${data.uniqueId}</b> tap-tap layar!`, color: '#ef4444' });
         });
 
         activeConnection.on('follow', data => {
-            socket.emit('notify', { msg: \`👤 <b>\${data.uniqueId}</b> mulai mengikuti!\`, color: '#3b82f6' });
+            socket.emit('notify', { msg: `👤 <b>${data.uniqueId}</b> mulai mengikuti!`, color: '#3b82f6' });
         });
 
         activeConnection.on('member', data => {
-            socket.emit('notify', { msg: \`👋 <b>\${data.uniqueId}</b> bergabung!\`, color: '#14b8a6' });
+            socket.emit('notify', { msg: `👋 <b>${data.uniqueId}</b> bergabung!`, color: '#14b8a6' });
         });
 
         activeConnection.on('streamEnd', () => {
