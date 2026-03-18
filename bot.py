@@ -20,14 +20,18 @@ DOMAIN = "https://modorazone.it.com/RNDM"
 
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Fungsi pembuat nama acak (10 karakter)
+# Fungsi pembuat nama acak: Huruf Awal Kapital + Acak + (Modora)
 def get_random_filename(ext):
-    rand_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-    return rand_str + ext
+    # 1 huruf kapital di awal
+    first_char = random.choice(string.ascii_uppercase)
+    # 8 karakter acak (huruf kecil dan angka)
+    rest_chars = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    # Gabungkan semuanya sesuai format
+    return f"{first_char}{rest_chars} (Modora){ext}"
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text("🚀 **Bot Upload Super Cepat Aktif!**\n\nKirimkan satu atau beberapa file sekaligus. Bot akan otomatis mengacak nama file dan menguploadnya ke cPanel tanpa batasan kecepatan.")
+    await message.reply_text("🚀 **Bot Upload Super Cepat Aktif!**\n\nKirimkan satu atau beberapa file sekaligus. Bot akan otomatis mengacak nama file dengan format `Random (Modora)` dan menguploadnya ke cPanel tanpa batasan kecepatan.")
 
 # Nangkep semua jenis file yang dikirim (bisa multiple files sekaligus)
 @app.on_message(filters.document | filters.photo | filters.video | filters.audio)
@@ -52,7 +56,7 @@ async def handle_file(client, message):
             else:
                 ext = ".mp3"
                 
-        # Generate random name
+        # Generate random name dengan format baru
         file_name = get_random_filename(ext)
         
         # ================= 2. PROSES DOWNLOAD (UNLIMITED SPEED) =================
@@ -126,6 +130,8 @@ async def handle_file(client, message):
                         ftp.mkd(d)
                         ftp.cwd(d)
 
+            # Upload file menggunakan URL Encode untuk spasi agar aman di URL browser nanti
+            # Tapi nyimpan di FTP tetap pakai spasi sesuai request lu
             with open(file_path, "rb") as file:
                 ftp.storbinary(f"STOR {file_name}", file, callback=ftp_callback)
             ftp.quit()
@@ -137,7 +143,8 @@ async def handle_file(client, message):
         os.remove(file_path)
 
         # ================= 4. HASIL AKHIR (FONT MONO) =================
-        file_url = f"{DOMAIN}/{file_name}"
+        # URL encode spasinya biar linknya bisa diklik langsung di Telegram
+        file_url = f"{DOMAIN}/{file_name.replace(' ', '%20')}"
         final_mb = total_size / (1024 * 1024)
         
         await status_msg.edit_text(
@@ -150,5 +157,5 @@ async def handle_file(client, message):
     except Exception as e:
         await status_msg.edit_text(f"❌ Error Terjadi: {e}")
 
-print("Bot Pyrogram Final Aktif: Mode Auto Random, Mono Font, dan Multi-File Processing!")
+print("Bot Pyrogram Final Aktif: Auto Format Nama '(Modora)', Mono Font, Multi-File Processing!")
 app.run()
