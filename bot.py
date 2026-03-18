@@ -1,3 +1,4 @@
+cat << 'EOF' > bot.py
 import telebot
 import requests
 
@@ -24,7 +25,6 @@ def handle_file(message):
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        # Upload ke hosting sementara file.io
         response = requests.post('https://file.io', files={'file': downloaded_file})
         
         if response.status_code == 200:
@@ -36,5 +36,10 @@ def handle_file(message):
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error: {e}")
 
+print("Membersihkan sisa Webhook lama...")
+bot.remove_webhook()
+
 print("Bot sedang berjalan...")
 bot.infinity_polling()
+EOF
+python bot.py
