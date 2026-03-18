@@ -1,9 +1,11 @@
-import telebot
+from pyrogram import Client, filters
 import ftplib
-from io import BytesIO
+import os
 
-TOKEN = "8586628406:AAHvCTHTz1erJTiB_9RrxVcrEawWcqmfc_k"
-bot = telebot.TeleBot(TOKEN)
+# ================= KREDENSIAL BOT & API =================
+API_ID = 28529912
+API_HASH = "c0189bbf4fe519babcdcc69d3c1230cb"
+BOT_TOKEN = "8586628406:AAHvCTHTz1erJTiB_9RrxVcrEawWcqmfc_k"
 
 # ================= KONFIGURASI HOSTING =================
 FTP_HOST = "denali.iixcp.rumahweb.net"
@@ -11,72 +13,59 @@ FTP_USER = "modorazo"
 FTP_PASS = "@Anjir!999" 
 FTP_DIR = "public_html/RNDM" 
 DOMAIN = "https://modorazone.it.com/RNDM"
-# =======================================================
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "Bot aktif! Kirim file dan bot akan langsung menguploadnya ke cPanel lu.\n\n⚠️ Catatan: Limit maksimal file dari Telegram adalah 20MB.")
+# Inisialisasi Bot Pyrogram
+app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-@bot.message_handler(content_types=['document', 'photo', 'audio', 'video'])
-def handle_file(message):
-    bot.reply_to(message, "⏳ Memproses dan mengupload ke cPanel...")
+@app.on_message(filters.command("start"))
+def start(client, message):
+    message.reply_text("Bot aktif dengan mesin Pyrogram! Gas kirim file APK atau video berukuran besar, bot akan langsung menguploadnya ke cPanel.")
+
+@app.on_message(filters.document | filters.photo | filters.video | filters.audio)
+def handle_file(client, message):
+    msg = message.reply_text("⏳ Memproses file... (Tunggu sebentar kalau filenya gede)")
+    
     try:
-        # Tentukan ukuran file dan nama file
-        file_size = 0
-        if message.content_type == 'document':
-            file_id = message.document.file_id
-            file_name = message.document.file_name
-            file_size = message.document.file_size
-        elif message.content_type == 'photo':
-            file_id = message.photo[-1].file_id
-            file_name = f"photo_{file_id[:10]}.jpg"
-            file_size = message.photo[-1].file_size
-        elif message.content_type == 'video':
-            file_id = message.video.file_id
-            file_name = f"video_{file_id[:10]}.mp4"
-            file_size = message.video.file_size
-        else:
-            file_id = message.audio.file_id
-            file_name = f"audio_{file_id[:10]}.mp3"
-            file_size = message.audio.file_size
-
-        # Cek limit API Telegram (20 MB = 20 * 1024 * 1024 bytes = 20971520 bytes)
-        if file_size and file_size > 20971520:
-            bot.reply_to(message, f"❌ Gagal: File terlalu besar!\n\nUkuran file lu: {round(file_size/1024/1024, 2)} MB.\nLimit resmi Telegram Bot maksimal cuma 20 MB.")
+        # Download file dari Telegram ke Termux
+        msg.edit_text("⏳ Sedang mendownload file dari Telegram ke Termux...")
+        file_path = message.download()
+        
+        if not file_path:
+            msg.edit_text("❌ Gagal mendownload file.")
             return
 
-        # Download dari Telegram
-        file_info = bot.get_file(file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
+        file_name = os.path.basename(file_path)
 
         # Proses Upload via FTP ke cPanel
+        msg.edit_text("☁️ Sedang mengupload file ke cPanel Rumahweb...")
         ftp = ftplib.FTP(FTP_HOST)
         ftp.login(FTP_USER, FTP_PASS)
         
         # Buat folder otomatis jika belum ada
         dirs = FTP_DIR.split('/')
         for d in dirs:
-            if d: # Abaikan string kosong
+            if d:
                 try:
-                    ftp.cwd(d) # Coba masuk ke folder
+                    ftp.cwd(d)
                 except ftplib.error_perm:
-                    ftp.mkd(d) # Kalau gagal (belum ada), buat foldernya
-                    ftp.cwd(d) # Lalu masuk ke folder yang baru dibuat
+                    ftp.mkd(d)
+                    ftp.cwd(d)
 
         # Upload file ke server
-        bio = BytesIO(downloaded_file)
-        ftp.storbinary(f"STOR {file_name}", bio)
+        with open(file_path, "rb") as file:
+            ftp.storbinary(f"STOR {file_name}", file)
+        
         ftp.quit()
+
+        # Hapus file lokal di Termux agar memori HP aman
+        os.remove(file_path)
 
         # Kasih link ke user
         file_url = f"{DOMAIN}/{file_name}"
-        bot.reply_to(message, f"✅ Berhasil masuk ke Hosting!\n🔗 Link: {file_url}")
+        msg.edit_text(f"✅ Berhasil masuk ke Hosting!\n🔗 Link: {file_url}")
             
     except Exception as e:
-        bot.reply_to(message, f"❌ Error FTP/Upload: {e}")
+        msg.edit_text(f"❌ Error FTP/Upload: {e}")
 
-print("Membersihkan Webhook...")
-bot.remove_webhook()
-
-print("Bot berjalan dan terhubung ke cPanel...")
-bot.infinity_polling()
+print("Bot Pyrogram berjalan dan siap menerima file besar...")
+app.run()
