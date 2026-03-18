@@ -9,7 +9,7 @@ import string
 # ================= KREDENSIAL BOT & API =================
 API_ID = 28529912
 API_HASH = "c0189bbf4fe519babcdcc69d3c1230cb"
-BOT_TOKEN = "8586628406:AAHvCTHTz1erJTiB_9RrxVcrEawWcqmfc_k"
+BOT_TOKEN = "8681433472:AAFEegcen0BAvo7KIkA9eBSJ-EkJyjXoDtw"
 
 # ================= KONFIGURASI HOSTING =================
 FTP_HOST = "denali.iixcp.rumahweb.net"
