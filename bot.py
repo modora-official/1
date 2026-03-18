@@ -9,6 +9,7 @@ import string
 # ================= KREDENSIAL BOT & API =================
 API_ID = 28529912
 API_HASH = "c0189bbf4fe519babcdcc69d3c1230cb"
+# TOKEN BARU LU:
 BOT_TOKEN = "8681433472:AAFEegcen0BAvo7KIkA9eBSJ-EkJyjXoDtw"
 
 # ================= KONFIGURASI HOSTING =================
@@ -130,20 +131,17 @@ async def handle_file(client, message):
                         ftp.mkd(d)
                         ftp.cwd(d)
 
-            # Upload file menggunakan URL Encode untuk spasi agar aman di URL browser nanti
-            # Tapi nyimpan di FTP tetap pakai spasi sesuai request lu
             with open(file_path, "rb") as file:
                 ftp.storbinary(f"STOR {file_name}", file, callback=ftp_callback)
             ftp.quit()
 
-        # Jalankan FTP secara paralel (aman buat multi-file)
+        # Jalankan FTP secara paralel
         await asyncio.to_thread(ftp_upload_task)
         
         # Bersihkan memori HP
         os.remove(file_path)
 
-        # ================= 4. HASIL AKHIR (FONT MONO) =================
-        # URL encode spasinya biar linknya bisa diklik langsung di Telegram
+        # ================= 4. HASIL AKHIR =================
         file_url = f"{DOMAIN}/{file_name.replace(' ', '%20')}"
         final_mb = total_size / (1024 * 1024)
         
@@ -157,5 +155,5 @@ async def handle_file(client, message):
     except Exception as e:
         await status_msg.edit_text(f"❌ Error Terjadi: {e}")
 
-print("Bot Pyrogram Final Aktif: Auto Format Nama '(Modora)', Mono Font, Multi-File Processing!")
+print("Bot Pyrogram Final Aktif (Token Baru)...")
 app.run()
