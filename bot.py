@@ -1,4 +1,3 @@
-cat << 'EOF' > bot.py
 import telebot
 import requests
 
@@ -41,5 +40,3 @@ bot.remove_webhook()
 
 print("Bot sedang berjalan...")
 bot.infinity_polling()
-EOF
-python bot.py
