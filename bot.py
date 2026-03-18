@@ -9,7 +9,7 @@ bot = telebot.TeleBot(TOKEN)
 FTP_HOST = "denali.iixcp.rumahweb.net"
 FTP_USER = "modorazo"
 # ISI PASSWORD LU DI BAWAH INI SEBELUM DIJALANKAN!
-FTP_PASS = "MASUKKAN_PASSWORD_CPANEL_DISINI" 
+FTP_PASS = "@Anjir!999" 
 # Folder tempat file web disimpan (biasanya public_html)
 FTP_DIR = "public_html/RNDM" 
 DOMAIN = "https://modorazone.it.com/RNDM"
