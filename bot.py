@@ -1,9 +1,10 @@
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import ftplib
 import os
 import time
 import asyncio
+import random
+import string
 
 # ================= KREDENSIAL BOT & API =================
 API_ID = 28529912
@@ -19,64 +20,48 @@ DOMAIN = "https://modorazone.it.com/RNDM"
 
 app = Client("upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Penyimpanan sementara status user buat ganti nama file
-pending_files = {}
+# Fungsi pembuat nama acak (10 karakter)
+def get_random_filename(ext):
+    rand_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    return rand_str + ext
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text("Bot aktif dengan mesin Pyrogram!\nGas kirim file apapun, nanti akan ada opsi buat ganti nama.")
+    await message.reply_text("🚀 **Bot Upload Super Cepat Aktif!**\n\nKirimkan satu atau beberapa file sekaligus. Bot akan otomatis mengacak nama file dan menguploadnya ke cPanel tanpa batasan kecepatan.")
 
-# Nangkep file yang dikirim
+# Nangkep semua jenis file yang dikirim (bisa multiple files sekaligus)
 @app.on_message(filters.document | filters.photo | filters.video | filters.audio)
-async def ask_rename(client, message):
-    chat_id = message.chat.id
-    # Simpan file ke memori sementara bot
-    pending_files[chat_id] = {"msg": message, "status": "WAITING_CHOICE"}
-    
-    # Bikin tombol pilihan
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Ya", callback_data="rename_ya"),
-         InlineKeyboardButton("❌ Tidak (Pakai nama asli)", callback_data="rename_tidak")]
-    ])
-    await message.reply_text("Apakah lu mau custom nama file ini?", reply_markup=keyboard)
-
-# Nangkep pencetan tombol
-@app.on_callback_query()
-async def button_handler(client, query):
-    chat_id = query.message.chat.id
-    if chat_id not in pending_files:
-        await query.answer("Waktu habis atau file tidak ditemukan. Kirim ulang filenya.", show_alert=True)
-        return
-
-    if query.data == "rename_tidak":
-        await query.message.edit_text("⏳ Oke, menggunakan nama asli. Memulai proses...")
-        await process_upload(client, chat_id, custom_name=None, status_msg=query.message)
-    
-    elif query.data == "rename_ya":
-        pending_files[chat_id]["status"] = "WAITING_NAME"
-        await query.message.edit_text("✍️ Silakan ketik nama file barunya (Contoh: `aplikasi_mod.apk` atau `video_lucu.mp4`).\n\n*Catatan: Pastikan jangan pakai spasi, ganti spasi pakai garis bawah (_).*")
-
-# Nangkep balasan teks (kalau dia pilih ganti nama)
-@app.on_message(filters.text & ~filters.command("start"))
-async def text_handler(client, message):
-    chat_id = message.chat.id
-    if chat_id in pending_files and pending_files[chat_id]["status"] == "WAITING_NAME":
-        new_name = message.text.replace(" ", "_")
-        status_msg = await message.reply_text(f"⏳ Nama file diatur menjadi: **{new_name}**. Memulai proses...")
-        await process_upload(client, chat_id, custom_name=new_name, status_msg=status_msg)
-
-# Fungsi utama buat Download & Upload dengan Speedometer
-async def process_upload(client, chat_id, custom_name, status_msg):
-    file_message = pending_files[chat_id]["msg"]
-    del pending_files[chat_id] # Hapus dari antrean
+async def handle_file(client, message):
+    status_msg = await message.reply_text("⏳ Memulai proses...")
     
     try:
-        # ================= 1. PROSES DOWNLOAD =================
+        # ================= 1. DETEKSI EKSTENSI ASLI =================
+        ext = ".bin" # Default fallback
+        if message.document and message.document.file_name:
+            ext = os.path.splitext(message.document.file_name)[1]
+        elif message.photo:
+            ext = ".jpg"
+        elif message.video:
+            if message.video.file_name:
+                ext = os.path.splitext(message.video.file_name)[1]
+            else:
+                ext = ".mp4"
+        elif message.audio:
+            if message.audio.file_name:
+                ext = os.path.splitext(message.audio.file_name)[1]
+            else:
+                ext = ".mp3"
+                
+        # Generate random name
+        file_name = get_random_filename(ext)
+        
+        # ================= 2. PROSES DOWNLOAD (UNLIMITED SPEED) =================
         start_dl_time = time.time()
-        last_dl_update = [time.time()] # Pakai list biar bisa diubah di dalam fungsi
+        last_dl_update = [time.time()]
 
         async def down_progress(current, total):
             now = time.time()
+            # Update bar tiap 2 detik biar gak limit Telegram, tapi speed asli tetap ngebut
             if now - last_dl_update[0] > 2 or current == total:
                 last_dl_update[0] = now
                 elapsed = now - start_dl_time
@@ -89,28 +74,17 @@ async def process_upload(client, chat_id, custom_name, status_msg):
                 
                 text = f"📥 **Mendownload dari Telegram...**\n" \
                        f"📊 Progress: {percent:.1f}% ({curr_mb:.1f} MB / {tot_mb:.1f} MB)\n" \
-                       f"🚀 Kecepatan: {speed_mbps:.2f} MB/s"
+                       f"🚀 Speed: {speed_mbps:.2f} MB/s"
                 try: await status_msg.edit_text(text)
                 except Exception: pass
 
-        file_path = await file_message.download(progress=down_progress)
+        file_path = await message.download(progress=down_progress)
         
         if not file_path:
             await status_msg.edit_text("❌ Gagal mendownload file dari Telegram.")
             return
-
-        # ================= 2. SETTING NAMA FILE =================
-        if custom_name:
-            file_name = custom_name
-            # Tambahin ekstensi asli kalau user lupa ngetik
-            if not os.path.splitext(file_name)[1]:
-                file_name += os.path.splitext(file_path)[1]
-        else:
-            file_name = os.path.basename(file_path)
-
-        await status_msg.edit_text(f"✅ Download 100%. Menyiapkan koneksi ke cPanel...\n📂 Nama file: {file_name}")
         
-        # ================= 3. PROSES UPLOAD FTP =================
+        # ================= 3. PROSES UPLOAD FTP (UNLIMITED SPEED) =================
         total_size = os.path.getsize(file_path)
         uploaded_bytes = 0
         start_up_time = time.time()
@@ -137,14 +111,14 @@ async def process_upload(client, chat_id, custom_name, status_msg):
                 
                 text = f"☁️ **Mengupload ke cPanel...**\n" \
                        f"📊 Progress: {percent:.1f}% ({curr_mb:.1f} MB / {tot_mb:.1f} MB)\n" \
-                       f"🚀 Kecepatan: {speed_mbps:.2f} MB/s"
+                       f"🚀 Speed: {speed_mbps:.2f} MB/s"
                 asyncio.run_coroutine_threadsafe(safe_edit(text), loop)
 
         def ftp_upload_task():
             ftp = ftplib.FTP(FTP_HOST)
             ftp.login(FTP_USER, FTP_PASS)
             
-            # Buat folder jika belum ada
+            # Auto-create folder cPanel
             for d in FTP_DIR.split('/'):
                 if d:
                     try: ftp.cwd(d)
@@ -156,18 +130,25 @@ async def process_upload(client, chat_id, custom_name, status_msg):
                 ftp.storbinary(f"STOR {file_name}", file, callback=ftp_callback)
             ftp.quit()
 
-        # Jalankan FTP pakai background thread biar gak ngelag
+        # Jalankan FTP secara paralel (aman buat multi-file)
         await asyncio.to_thread(ftp_upload_task)
-
-        # Hapus file lokal di HP
+        
+        # Bersihkan memori HP
         os.remove(file_path)
 
-        # Hasil Akhir
+        # ================= 4. HASIL AKHIR (FONT MONO) =================
         file_url = f"{DOMAIN}/{file_name}"
-        await status_msg.edit_text(f"✅ **SUKSES MASUK HOSTING!**\n\n📂 Nama File: {file_name}\n🔗 Link: {file_url}")
+        final_mb = total_size / (1024 * 1024)
+        
+        await status_msg.edit_text(
+            f"✅ **SUKSES MASUK HOSTING!**\n\n"
+            f"📂 Nama File :\n`{file_name}`\n\n"
+            f"📏 Ukuran File :\n`{final_mb:.2f} MB`\n\n"
+            f"🔗 Link Download :\n`{file_url}`"
+        )
             
     except Exception as e:
         await status_msg.edit_text(f"❌ Error Terjadi: {e}")
 
-print("Bot Pyrogram V3 aktif: Fitur Tombol Rename & Speedometer MB/s berjalan!")
+print("Bot Pyrogram Final Aktif: Mode Auto Random, Mono Font, dan Multi-File Processing!")
 app.run()
