@@ -1,292 +1,236 @@
+import threading
 import asyncio
-import json
-import random
-import difflib
-from aiohttp import web
+from flask import Flask, jsonify, request
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import CommentEvent
+from TikTokLive.events import ConnectEvent, CommentEvent, LikeEvent, JoinEvent, ShareEvent, ViewerCountUpdateEvent
 
-# ==========================================
-# KONFIGURASI UTAMA
-# ==========================================
+# Konfigurasi
 TIKTOK_USERNAME = "c_poek"
-PORT = 8080
+PORT = 5000
 
-# Dataset Gambar (Tambahkan URL gambar tak terbatas di sini)
-# Format: {"url": "link_gambar", "answer": "jawaban"}
-IMAGE_DB = [
-    {"url": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=800", "answer": "kucing"},
-    {"url": "https://images.unsplash.com/photo-1561037404-61cd46aa615b?w=800", "answer": "anjing"},
-    {"url": "https://images.unsplash.com/photo-1550258288-3fc06e67301c?w=800", "answer": "sepeda"},
-    {"url": "https://images.unsplash.com/photo-1502877338535-766e1452684a?w=800", "answer": "mobil"},
-    {"url": "https://images.unsplash.com/photo-1587590227264-0ac64ce63ce8?w=800", "answer": "gitar"},
-]
+app = Flask(__name__)
+client = TikTokLiveClient(unique_id=TIKTOK_USERNAME)
 
-# ==========================================
-# GAME STATE & LOGIC
-# ==========================================
-class GameState:
-    def __init__(self):
-        self.current_image = ""
-        self.current_answer = ""
-        self.blur_level = 50
-        self.zoom_level = 2.0
-        self.winner = None
-        self.time_left = 30
-        self.clients = set()
+# State Management
+event_queue = []
+dashboard_state = {
+    "viewers": 0,
+    "likes": 0,
+    "joined": 0,
+    "shares": 0,
+    "comments": 0,
+    "status": "Menunggu Live..."
+}
 
-state = GameState()
+# --- TikTokLive Events ---
+@client.on(ConnectEvent)
+async def on_connect(event: ConnectEvent):
+    dashboard_state["status"] = f"Terhubung: {event.room_id}"
 
-def check_answer(guess, correct):
-    # Cek jawaban dengan toleransi typo (80% kemiripan)
-    ratio = difflib.SequenceMatcher(None, guess.lower().strip(), correct.lower().strip()).ratio()
-    return ratio >= 0.8
+@client.on(ViewerCountUpdateEvent)
+async def on_viewer_count(event: ViewerCountUpdateEvent):
+    dashboard_state["viewers"] = event.viewer_count
 
-async def broadcast_state():
-    if not state.clients:
-        return
-    
-    payload = json.dumps({
-        "image": state.current_image,
-        "blur": state.blur_level,
-        "zoom": state.zoom_level,
-        "time": state.time_left,
-        "winner": state.winner,
-        "answer": state.current_answer if (state.winner or state.time_left <= 0) else "?"
+@client.on(LikeEvent)
+async def on_like(event: LikeEvent):
+    dashboard_state["likes"] += event.like_count
+
+@client.on(JoinEvent)
+async def on_join(event: JoinEvent):
+    dashboard_state["joined"] += 1
+
+@client.on(ShareEvent)
+async def on_share(event: ShareEvent):
+    dashboard_state["shares"] += 1
+
+@client.on(CommentEvent)
+async def on_comment(event: CommentEvent):
+    dashboard_state["comments"] += 1
+    event_queue.append({
+        "type": "comment",
+        "user": event.user.nickname,
+        "text": event.comment
     })
-    
-    for ws in list(state.clients):
-        try:
-            await ws.send_str(payload)
-        except:
-            state.clients.remove(ws)
 
-async def game_loop():
-    """Infinite loop untuk rotasi game."""
-    while True:
-        # 1. Setup Ronde Baru
-        item = random.choice(IMAGE_DB)
-        state.current_image = item["url"]
-        state.current_answer = item["answer"]
-        state.winner = None
-        state.blur_level = 30 # Awal sangat blur
-        state.zoom_level = 2.0 # Awal ter-zoom
-        state.time_left = 30
-        
-        await broadcast_state()
+def start_tiktok_client():
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(client.start())
+    except Exception as e:
+        print(f"Error TikTokLive: {e}")
 
-        # 2. Countdown & Reveal Gambar Bertahap
-        while state.time_left > 0 and not state.winner:
-            await asyncio.sleep(1)
-            state.time_left -= 1
-            
-            # Perlahan kurangi blur dan zoom agar gambar makin jelas
-            if state.blur_level > 0:
-                state.blur_level -= 1
-            if state.zoom_level > 1.0:
-                state.zoom_level -= 0.03
-                
-            await broadcast_state()
-
-        # 3. Ronde Berakhir (Ada pemenang atau Waktu Habis)
-        state.blur_level = 0
-        state.zoom_level = 1.0
-        await broadcast_state()
-        
-        # Jeda sebelum lanjut ronde berikutnya
-        await asyncio.sleep(5)
-
-# ==========================================
-# TIKTOK LIVE INTEGRATION
-# ==========================================
-async def start_tiktok():
-    """Koneksi ke TikTok Live (Tetap jalan meski offline)."""
-    client = TikTokLiveClient(unique_id=TIKTOK_USERNAME)
-
-    @client.on(CommentEvent)
-    async def on_comment(event: CommentEvent):
-        # Jika belum ada pemenang dan ada yang komentar
-        if not state.winner and state.time_left > 0:
-            if check_answer(event.comment, state.current_answer):
-                state.winner = event.user.nickname
-                print(f"[WINNER] {state.winner} menebak benar: {event.comment}")
-                await broadcast_state()
-
-    while True:
-        try:
-            print(f"Menghubungkan ke TikTok LIVE @{TIKTOK_USERNAME}...")
-            await client.start()
-        except Exception as e:
-            print(f"[STANDBY MODE] TikTok Live offline/error. Retrying in 30s...")
-            await asyncio.sleep(30)
-
-# ==========================================
-# WEB SERVER & UI (HTML/CANVAS)
-# ==========================================
-HTML_CONTENT = """
-<!DOCTYPE html>
+# --- Web & PWA Routes ---
+@app.route('/')
+def index():
+    return """<!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tebak Gambar TikTok Live</title>
+    <title>Live Game PWA</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body {
-            margin: 0; padding: 0; background-color: #0f0f0f; color: white;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex; justify-content: center; align-items: center;
-            height: 100vh; overflow: hidden;
-        }
-        .game-container {
-            width: 100vw; max-width: 133vh; aspect-ratio: 4/3;
-            background: #1a1a1a; position: relative; overflow: hidden;
-            box-shadow: 0 0 20px rgba(0,0,0,0.8);
-        }
-        #main-image {
-            width: 100%; height: 100%; object-fit: cover;
-            transition: filter 1s linear, transform 1s linear;
-        }
-        .overlay {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none; display: flex; flex-direction: column;
-            justify-content: space-between; padding: 20px; box-sizing: border-box;
-        }
-        .header { display: flex; justify-content: space-between; align-items: flex-start; }
-        .status-box {
-            background: rgba(255, 0, 80, 0.9); padding: 10px 25px;
-            border-radius: 30px; font-weight: bold; font-size: 24px;
-            text-transform: uppercase; letter-spacing: 2px;
-            box-shadow: 0 4px 15px rgba(255,0,80,0.4);
-        }
-        .timer {
-            background: rgba(0, 0, 0, 0.8); padding: 10px 20px;
-            border-radius: 15px; font-size: 30px; font-weight: bold;
-            border: 2px solid #00f2fe; color: #00f2fe;
-        }
-        .winner-banner {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            background: rgba(0, 242, 254, 0.95); color: #000; padding: 30px 50px;
-            border-radius: 20px; text-align: center; display: none;
-            box-shadow: 0 0 50px rgba(0,242,254,0.6); animation: pop 0.5s ease-out forwards;
-        }
-        @keyframes pop {
-            0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
-            100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
-        }
-        .winner-banner h2 { margin: 0; font-size: 40px; text-transform: uppercase; }
-        .winner-banner p { margin: 10px 0 0; font-size: 24px; font-weight: bold; }
-        .answer-reveal {
-            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
-            background: rgba(0,0,0,0.8); padding: 15px 40px; border-radius: 30px;
-            font-size: 32px; font-weight: bold; letter-spacing: 3px;
-            border: 2px solid #fff; text-transform: uppercase;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background-color: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; font-family: 'Segoe UI', sans-serif; color: #f8fafc; overflow: hidden; }
+        #app-container { aspect-ratio: 4 / 3; width: 100%; max-height: 100vh; max-width: calc(100vh * (4/3)); background: #1e293b; box-shadow: 0 0 20px rgba(0,0,0,0.8); display: flex; flex-direction: column; overflow: hidden; position: relative; }
+        
+        /* Header / Dashboard */
+        .dashboard { display: grid; grid-template-columns: repeat(6, 1fr); background: #0f172a; padding: 10px; border-bottom: 2px solid #334155; text-align: center; font-size: 14px; font-weight: bold; }
+        .stat-box { display: flex; flex-direction: column; align-items: center; justify-content: center; border-right: 1px solid #334155; }
+        .stat-box:last-child { border-right: none; }
+        .stat-box i { font-size: 18px; margin-bottom: 5px; color: #38bdf8; }
+        .stat-box span { color: #94a3b8; font-size: 12px; }
+
+        /* Main Game Area */
+        .game-area { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative; }
+        .word-display { font-size: 50px; letter-spacing: 15px; font-weight: bold; color: #fbbf24; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); margin-bottom: 20px; }
+        .question-text { font-size: 20px; color: #94a3b8; margin-bottom: 30px; }
+        .status-bar { position: absolute; bottom: 10px; left: 10px; font-size: 12px; color: #22c55e; }
+
+        /* Leaderboard */
+        .leaderboard { position: absolute; top: 10px; right: 10px; background: rgba(15, 23, 42, 0.8); padding: 10px; border-radius: 8px; width: 220px; border: 1px solid #334155; }
+        .leaderboard h3 { font-size: 14px; text-transform: uppercase; border-bottom: 1px solid #334155; padding-bottom: 5px; margin-bottom: 5px; text-align: center; color: #f43f5e; }
+        .top-user { display: flex; justify-content: space-between; font-size: 14px; margin: 5px 0; }
+        .username { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+        .score { font-weight: bold; color: #fbbf24; }
     </style>
 </head>
 <body>
-    <div class="game-container">
-        <img id="main-image" src="" alt="Misteri">
-        <div class="overlay">
-            <div class="header">
-                <div class="status-box" id="status-text">TEBAK GAMBAR!</div>
-                <div class="timer" id="timer">30</div>
-            </div>
-            <div class="answer-reveal" id="answer-text">?????</div>
+    <div id="app-container">
+        <div class="dashboard">
+            <div class="stat-box"><i class="fas fa-eye"></i><div id="val-viewers">0</div><span>Penonton</span></div>
+            <div class="stat-box"><i class="fas fa-user-plus"></i><div id="val-joined">0</div><span>Bergabung</span></div>
+            <div class="stat-box"><i class="fas fa-heart"></i><div id="val-likes">0</div><span>Likes</span></div>
+            <div class="stat-box"><i class="fas fa-comment"></i><div id="val-comments">0</div><span>Komentar</span></div>
+            <div class="stat-box"><i class="fas fa-share"></i><div id="val-shares">0</div><span>Share</span></div>
+            <div class="stat-box"><i class="fas fa-signal"></i><div id="val-status">Standby</div><span>Status</span></div>
         </div>
-        <div class="winner-banner" id="winner-banner">
-            <h2>BENAR!</h2>
-            <p id="winner-name">@username</p>
+
+        <div class="game-area">
+            <div class="leaderboard">
+                <h3><i class="fas fa-trophy"></i> Top 3 Users</h3>
+                <div id="lb-content"></div>
+            </div>
+            
+            <div class="question-text"><i class="fas fa-gamepad"></i> Tebak Kata di Komentar!</div>
+            <div class="word-display" id="word-display">_ _ _ _ _</div>
+            <div class="status-bar"><i class="fas fa-circle-check"></i> Real-time Active</div>
         </div>
     </div>
 
     <script>
-        const ws = new WebSocket(`ws://${location.host}/ws`);
-        const img = document.getElementById('main-image');
-        const timerEl = document.getElementById('timer');
-        const statusEl = document.getElementById('status-text');
-        const winnerBanner = document.getElementById('winner-banner');
-        const winnerName = document.getElementById('winner-name');
-        const answerText = document.getElementById('answer-text');
+        // Registrasi Service Worker untuk PWA
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(err => console.error(err));
+        }
 
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            
-            // Update Gambar & Efek Modifikasi
-            if(img.src !== data.image) img.src = data.image;
-            img.style.filter = `blur(${data.blur}px) contrast(1.2)`;
-            img.style.transform = `scale(${data.zoom})`;
-            
-            // Update Timer
-            timerEl.innerText = data.time;
-            
-            // Update Jawaban
-            answerText.innerText = data.answer;
+        const databaseKata = ["GITHUB", "TERMUX", "WEBSITE", "PROGRAMMER", "INTERNET", "KOMPUTER", "APLIKASI", "SERVER"];
+        let kataRahasia = "";
+        let kataTebakan = [];
+        let skorUser = {};
 
-            // Handle UI Pemenang / Waktu Habis
-            if (data.winner) {
-                statusEl.innerText = "ADA PEMENANG!";
-                statusEl.style.background = "#00f2fe";
-                statusEl.style.color = "#000";
-                winnerName.innerText = "@" + data.winner;
-                winnerBanner.style.display = "block";
-                document.body.style.animation = "flash 0.5s";
-            } else if (data.time <= 0) {
-                statusEl.innerText = "WAKTU HABIS!";
-                statusEl.style.background = "#ff0050";
-                statusEl.style.color = "#fff";
-                winnerBanner.style.display = "none";
-            } else {
-                statusEl.innerText = "TEBAK SEKARANG!";
-                statusEl.style.background = "rgba(255, 0, 80, 0.9)";
-                statusEl.style.color = "#fff";
-                winnerBanner.style.display = "none";
-                document.body.style.animation = "none";
+        function pilihKataBaru() {
+            kataRahasia = databaseKata[Math.floor(Math.random() * databaseKata.length)];
+            let arrayTebakan = [];
+            for (let i = 0; i < kataRahasia.length; i++) {
+                // Tampilkan huruf pertama, terakhir, atau acak. Sisanya underscore
+                if (i === 0 || i === kataRahasia.length - 1 || Math.random() > 0.6) {
+                    arrayTebakan.push(kataRahasia[i]);
+                } else {
+                    arrayTebakan.push("_");
+                }
             }
-        };
+            if (!arrayTebakan.includes("_")) arrayTebakan[1] = "_"; // Wajib ada huruf hilang
+            kataTebakan = arrayTebakan;
+            document.getElementById('word-display').innerText = kataTebakan.join(" ");
+        }
+
+        function updateLeaderboard() {
+            const sortedUsers = Object.entries(skorUser).sort((a, b) => b[1] - a[1]).slice(0, 3);
+            let html = "";
+            sortedUsers.forEach((user, index) => {
+                let medal = index === 0 ? '<i class="fas fa-medal" style="color:gold"></i> ' : 
+                            index === 1 ? '<i class="fas fa-medal" style="color:silver"></i> ' : 
+                                          '<i class="fas fa-medal" style="color:#cd7f32"></i> ';
+                html += `<div class="top-user">${medal}<span class="username">${user[0]}</span> <span class="score">${user[1]}</span></div>`;
+            });
+            document.getElementById('lb-content').innerHTML = html;
+        }
+
+        async function fetchEvents() {
+            try {
+                const res = await fetch('/api/data');
+                const data = await res.json();
+                
+                // Update Dashboard
+                document.getElementById('val-viewers').innerText = data.state.viewers;
+                document.getElementById('val-joined').innerText = data.state.joined;
+                document.getElementById('val-likes').innerText = data.state.likes;
+                document.getElementById('val-comments').innerText = data.state.comments;
+                document.getElementById('val-shares').innerText = data.state.shares;
+                document.getElementById('val-status').innerText = "Live";
+                
+                // Cek Jawaban dari Komentar
+                data.events.forEach(ev => {
+                    if (ev.type === "comment") {
+                        if (ev.text.toUpperCase() === kataRahasia.toUpperCase()) {
+                            if (!skorUser[ev.user]) skorUser[ev.user] = 0;
+                            skorUser[ev.user] += 10;
+                            updateLeaderboard();
+                            pilihKataBaru();
+                        }
+                    }
+                });
+            } catch (e) {
+                console.log("Koneksi polling terputus, mencoba lagi...");
+            }
+        }
+
+        pilihKataBaru();
+        setInterval(fetchEvents, 1000); // Polling setiap detik (Real-time standby)
     </script>
 </body>
-</html>
-"""
+</html>"""
 
-async def index_handler(request):
-    return web.Response(text=HTML_CONTENT, content_type='text/html')
+@app.route('/api/data')
+def api_data():
+    global event_queue
+    data_to_send = list(event_queue)
+    event_queue.clear()
+    return jsonify({
+        "state": dashboard_state,
+        "events": data_to_send
+    })
 
-async def websocket_handler(request):
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    state.clients.add(ws)
-    await broadcast_state() # Kirim state saat ini saat client baru connect
-    
-    try:
-        async for msg in ws:
-            pass # Hanya listen, tidak perlu proses pesan masuk dari browser
-    finally:
-        state.clients.remove(ws)
-    return ws
+@app.route('/manifest.json')
+def manifest():
+    manifest_data = {
+        "name": "Live Interactive Game",
+        "short_name": "LiveGame",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0f172a",
+        "theme_color": "#1e293b",
+        "icons": [{
+            "src": "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/svgs/solid/gamepad.svg",
+            "sizes": "192x192",
+            "type": "image/svg+xml"
+        }]
+    }
+    return jsonify(manifest_data)
 
-# ==========================================
-# MAIN EXECUTION
-# ==========================================
-async def main():
-    app = web.Application()
-    app.router.add_get('/', index_handler)
-    app.router.add_get('/ws', websocket_handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    
-    print(f"Server berjalan di http://localhost:{PORT}")
-    
-    # Jalankan Game Loop dan TikTok Client secara paralel di background
-    await asyncio.gather(
-        game_loop(),
-        start_tiktok()
-    )
+@app.route('/sw.js')
+def service_worker():
+    return """
+self.addEventListener('install', (e) => { self.skipWaiting(); });
+self.addEventListener('activate', (e) => { e.waitUntil(clients.claim()); });
+self.addEventListener('fetch', (e) => { e.respondWith(fetch(e.request)); });
+""", 200, {'Content-Type': 'application/javascript'}
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Server dimatikan.")
+    # Jalankan TikTok Listener di Background Thread
+    threading.Thread(target=start_tiktok_client, daemon=True).start()
+    # Jalankan Web Server
+    app.run(host='0.0.0.0', port=PORT, debug=False)
