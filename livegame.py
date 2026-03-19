@@ -3,258 +3,266 @@ import json
 from fastapi import FastAPI, WebSocket, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import CommentEvent, LikeEvent, GiftEvent, ShareEvent, ConnectEvent
+from TikTokLive.events import CommentEvent, LikeEvent, GiftEvent, ConnectEvent
 import uvicorn
 
 app = FastAPI()
 client = TikTokLiveClient(unique_id="@c_poek")
 connected_websockets = set()
 
-# --- PWA CONFIG ---
 @app.get("/manifest.json")
 async def get_manifest():
     return JSONResponse({
-        "name": "Live 3D War", "short_name": "3DWar", "start_url": "/",
+        "name": "Live Command Center", "short_name": "WarRoom", "start_url": "/",
         "display": "standalone", "orientation": "landscape",
-        "background_color": "#000000", "theme_color": "#ff0000",
-        "icons": [{"src": "/icon.svg", "sizes": "512x512", "type": "image/svg+xml"}]
+        "background_color": "#050b14", "theme_color": "#00ffea"
     })
 
-@app.get("/sw.js")
-async def get_sw():
-    js = "self.addEventListener('install', (e) => { self.skipWaiting(); });"
-    return Response(content=js, media_type="application/javascript")
-
-@app.get("/icon.svg")
-async def get_icon():
-    return Response(content="""<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="#000"/><text x="50%" y="50%" fill="red" font-size="250" font-family="Arial" dominant-baseline="middle" text-anchor="middle">🚀</text></svg>""", media_type="image/svg+xml")
-
-# --- FRONTEND 3D (THREE.JS + HTML) ---
+# --- FRONTEND (UI HIGH-TECH & TOP USER LOGIC) ---
 HTML_CONTENT = """
 <!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>3D Live War</title>
+    <title>War Command Center</title>
     <link rel="manifest" href="/manifest.json">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&display=swap');
-        body { margin: 0; overflow: hidden; background: #000; font-family: 'Rajdhani', sans-serif; user-select: none; }
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@500;700&display=swap');
         
-        #game-container {
-            width: 100vw; height: 100vh; max-width: 133.33vh; max-height: 75vw;
-            aspect-ratio: 4/3; margin: auto; position: relative; background: #050505;
-            box-shadow: 0 0 50px rgba(255,0,0,0.2);
+        * { box-sizing: border-box; }
+        body { 
+            margin: 0; padding: 0; background: #02050a; color: white;
+            font-family: 'Rajdhani', sans-serif; overflow: hidden; user-select: none;
+            display: flex; justify-content: center; align-items: center; height: 100vh;
         }
 
-        #canvas-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1; }
-
-        /* UI Overlay Profesional */
-        #ui-layer {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10;
-            pointer-events: none; padding: 20px; box-sizing: border-box;
-            background: radial-gradient(circle, transparent 60%, rgba(0,0,0,0.8) 100%);
+        /* Container 4:3 */
+        #game-wrapper {
+            width: 100vw; height: 100vh; max-width: 133.33vh; max-height: 75vw; aspect-ratio: 4/3;
+            background: radial-gradient(circle at center, #0a192f 0%, #02050a 100%);
+            position: relative; overflow: hidden; border: 2px solid #00ffea;
+            box-shadow: inset 0 0 50px rgba(0, 255, 234, 0.2), 0 0 20px rgba(0, 255, 234, 0.5);
         }
 
-        .hud-title { color: #ff0050; font-size: 2rem; font-weight: 700; text-transform: uppercase; text-shadow: 0 0 10px #ff0050; margin: 0; }
-        .hud-subtitle { color: #00e5ff; font-size: 1.2rem; margin: 0; text-shadow: 0 0 5px #00e5ff; }
+        /* Radar Grid Background */
+        .grid {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-image: 
+                linear-gradient(rgba(0, 255, 234, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 234, 0.1) 1px, transparent 1px);
+            background-size: 30px 30px; z-index: 1; pointer-events: none;
+        }
 
-        /* Notification Log */
-        #notif-log {
-            position: absolute; bottom: 20px; left: 20px; width: 40%; max-height: 40%;
-            display: flex; flex-direction: column-reverse; gap: 8px; overflow: hidden;
+        /* Canvas Particle Engine */
+        #particle-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; }
+
+        /* HUD LAYOUT */
+        #hud-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; display: flex; flex-direction: column; padding: 15px; }
+
+        .header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .title-box { background: rgba(0, 20, 40, 0.8); border-left: 5px solid #00ffea; padding: 10px 20px; backdrop-filter: blur(5px); }
+        .title-box h1 { font-family: 'Orbitron', sans-serif; margin: 0; font-size: 1.8rem; color: #00ffea; text-shadow: 0 0 10px #00ffea; }
+        .title-box p { margin: 0; color: #8892b0; font-size: 1rem; }
+
+        /* TOP USER LEADERBOARD (KIRI) */
+        .panel {
+            background: rgba(2, 10, 20, 0.85); border: 1px solid rgba(0, 255, 234, 0.3);
+            border-radius: 8px; backdrop-filter: blur(10px); display: flex; flex-direction: column;
         }
-        .notif-item {
-            background: rgba(0, 20, 40, 0.7); border-left: 4px solid #00e5ff;
-            padding: 8px 12px; color: white; border-radius: 4px; font-size: 1.1rem;
-            animation: slideIn 0.3s ease-out; backdrop-filter: blur(4px);
-        }
-        .notif-like { border-left-color: #ff0050; }
-        .notif-gift { border-left-color: #ffd700; background: rgba(40, 30, 0, 0.8); font-weight: bold; }
-        .notif-share { border-left-color: #00ff88; }
         
-        @keyframes slideIn { from { transform: translateX(-50px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        #top-users { width: 35%; height: 60%; margin-top: 15px; position: absolute; left: 15px; top: 70px; }
+        .panel-header { background: rgba(0, 255, 234, 0.1); padding: 8px 15px; border-bottom: 1px solid rgba(0, 255, 234, 0.3); font-family: 'Orbitron'; font-weight: bold; color: #ffd700; display: flex; align-items: center; gap: 10px; }
+        .panel-body { padding: 10px; flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
 
-        /* Start Button Overlay */
+        .user-card {
+            display: flex; justify-content: space-between; align-items: center;
+            background: linear-gradient(90deg, rgba(0,255,234,0.1), transparent);
+            padding: 8px 12px; border-radius: 4px; border-left: 3px solid #888;
+            transition: all 0.3s ease;
+        }
+        .user-card.rank-1 { border-left-color: #ffd700; background: linear-gradient(90deg, rgba(255, 215, 0, 0.2), transparent); box-shadow: 0 0 10px rgba(255,215,0,0.2); }
+        .user-card.rank-2 { border-left-color: #c0c0c0; }
+        .user-card.rank-3 { border-left-color: #cd7f32; }
+        
+        .user-info { display: flex; align-items: center; gap: 10px; }
+        .user-rank { font-family: 'Orbitron'; font-weight: 900; font-size: 1.2rem; }
+        .user-name { font-size: 1.1rem; font-weight: bold; color: white; width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .user-score { font-family: 'Orbitron'; color: #00ffea; font-size: 1.1rem; font-weight: bold; }
+
+        /* NOTIFICATION LOG (KANAN BAWAH) */
+        #activity-log { width: 40%; height: 40%; position: absolute; right: 15px; bottom: 15px; }
+        #log-content { display: flex; flex-direction: column; gap: 5px; font-size: 0.95rem; justify-content: flex-end; }
+        .log-item { padding: 5px 10px; border-radius: 3px; animation: slideLeft 0.3s ease-out; border-left: 2px solid; }
+        .log-like { background: rgba(255, 0, 80, 0.1); border-color: #ff0050; color: #ffb3c6; }
+        .log-gift { background: rgba(255, 215, 0, 0.1); border-color: #ffd700; color: #fff3b0; font-weight: bold; }
+        .log-join { background: rgba(0, 255, 234, 0.1); border-color: #00ffea; color: #a6fff8; }
+
+        @keyframes slideLeft { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+        /* Start Overlay */
         #start-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100;
-            background: rgba(0,0,0,0.9); display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: auto;
+            background: rgba(0,0,0,0.9); display: flex; flex-direction: column; justify-content: center; align-items: center;
         }
-        .btn { padding: 15px 40px; font-size: 1.5rem; background: #ff0050; color: white; border: none; cursor: pointer; border-radius: 5px; font-family: 'Rajdhani'; font-weight: bold; text-transform: uppercase; box-shadow: 0 0 20px #ff0050; }
+        .btn { padding: 15px 40px; font-size: 1.5rem; background: transparent; color: #00ffea; border: 2px solid #00ffea; cursor: pointer; border-radius: 5px; font-family: 'Orbitron'; font-weight: bold; text-transform: uppercase; transition: all 0.2s; box-shadow: 0 0 15px rgba(0,255,234,0.3); }
+        .btn:active { background: #00ffea; color: black; }
     </style>
 </head>
 <body>
-    <div id="game-container">
-        <div id="canvas-container"></div>
-        
-        <div id="ui-layer">
-            <h1 class="hud-title">TARGET: KOTA MUSUH</h1>
-            <p class="hud-subtitle">TAP LAYAR UNTUK MENEMBAK | GIFT UNTUK NUKLIR</p>
-            <div id="notif-log"></div>
+    <div id="game-wrapper">
+        <div class="grid"></div>
+        <canvas id="particle-canvas"></canvas>
+
+        <div id="hud-container">
+            <div class="header">
+                <div class="title-box">
+                    <h1>SISTEM PERTAHANAN CYBER</h1>
+                    <p>STATUS: AKTIF | TARGET: c_poek</p>
+                </div>
+            </div>
+
+            <div class="panel" id="top-users">
+                <div class="panel-header">👑 TOP KOMANDAN (PENYUMBANG)</div>
+                <div class="panel-body" id="leaderboard-body">
+                    </div>
+            </div>
+
+            <div class="panel" id="activity-log">
+                <div class="panel-header">📡 RADAR AKTIVITAS</div>
+                <div class="panel-body" id="log-content"></div>
+            </div>
         </div>
 
         <div id="start-overlay">
-            <h1 style="color:white; font-size:3rem; margin-bottom: 20px;">3D CYBER WARFARE</h1>
-            <button class="btn" onclick="initGame()">Mulai Fullscreen</button>
+            <button class="btn" onclick="initSystem()">INISIALISASI SISTEM</button>
         </div>
     </div>
 
     <script>
-        // --- 3D ENGINE SETUP ---
-        let scene, camera, renderer;
-        let projectiles = [];
-        let particles = [];
-        let isRunning = false;
+        // --- DATA & LOGIC MANAGER ---
+        let topUsers = {}; // Simpan skor user: { username: { score: 100, name: 'Budi' } }
+        const POINT_LIKE = 1;
+        const POINT_GIFT = 100; // Gift nilainya jauh lebih besar
+        let isSystemActive = false;
 
-        function init3D() {
-            const container = document.getElementById('canvas-container');
-            scene = new THREE.Scene();
-            scene.fog = new THREE.FogExp2(0x000000, 0.02);
-
-            // Camera rasio 4:3
-            camera = new THREE.PerspectiveCamera(60, 4/3, 0.1, 1000);
-            camera.position.set(0, 5, 20);
-            camera.lookAt(0, 0, -30);
-
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-            renderer.setSize(container.clientWidth, container.clientHeight);
-            container.appendChild(renderer.domElement);
-
-            // Lighting
-            const ambient = new THREE.AmbientLight(0x222222);
-            scene.add(ambient);
-            const directional = new THREE.DirectionalLight(0xffffff, 1);
-            directional.position.set(10, 20, 10);
-            scene.add(directional);
-
-            // Ground Grid (Matrix Style)
-            const gridHelper = new THREE.GridHelper(200, 100, 0x00e5ff, 0x003344);
-            gridHelper.position.y = -2;
-            scene.add(gridHelper);
-
-            // Enemy Target Box (The Base)
-            const baseGeometry = new THREE.BoxGeometry(10, 10, 10);
-            const baseMaterial = new THREE.MeshPhongMaterial({ color: 0x222222, emissive: 0x550000, wireframe: true });
-            const enemyBase = new THREE.Mesh(baseGeometry, baseMaterial);
-            enemyBase.position.set(0, 3, -40);
-            scene.add(enemyBase);
-
-            animate();
-        }
-
-        function createExplosion(x, y, z, color, size) {
-            const geometry = new THREE.SphereGeometry(size, 16, 16);
-            const material = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.8 });
-            const sphere = new THREE.Mesh(geometry, material);
-            sphere.position.set(x, y, z);
-            scene.add(sphere);
-            particles.push({ mesh: sphere, life: 1.0, decay: 0.05, maxScale: size * 2 });
-        }
-
-        function fireMissile(isGift = false) {
-            const geometry = new THREE.CylinderGeometry(0.2, 0.2, 2, 8);
-            geometry.rotateX(Math.PI / 2);
-            const color = isGift ? 0xffd700 : 0xff0050; // Gold for gift, Red for like
-            const material = new THREE.MeshBasicMaterial({ color: color });
-            const missile = new THREE.Mesh(geometry, material);
-            
-            // Random start position near camera
-            missile.position.set((Math.random() - 0.5) * 20, Math.random() * 5 + 1, 15);
-            scene.add(missile);
-            
-            projectiles.push({ mesh: missile, speed: isGift ? 1.5 : 1.0, isGift: isGift });
-        }
-
-        function animate() {
-            if (!isRunning) return;
-            requestAnimationFrame(animate);
-
-            // Move Projectiles
-            for (let i = projectiles.length - 1; i >= 0; i--) {
-                let p = projectiles[i];
-                p.mesh.position.z -= p.speed;
-                p.mesh.position.x *= 0.95; // Curve towards center
-                
-                // Hit Target
-                if (p.mesh.position.z <= -35) {
-                    createExplosion(
-                        (Math.random() - 0.5) * 10, Math.random() * 5, -35 + (Math.random() * 5),
-                        p.isGift ? 0xffaa00 : 0xff5555,
-                        p.isGift ? 8 : 2
-                    );
-                    scene.remove(p.mesh);
-                    projectiles.splice(i, 1);
-                }
-            }
-
-            // Animate Explosions
-            for (let i = particles.length - 1; i >= 0; i--) {
-                let pt = particles[i];
-                pt.life -= pt.decay;
-                pt.mesh.scale.setScalar(1 + (1 - pt.life) * pt.maxScale);
-                pt.mesh.material.opacity = pt.life;
-                if (pt.life <= 0) {
-                    scene.remove(pt.mesh);
-                    particles.splice(i, 1);
-                }
-            }
-
-            renderer.render(scene, camera);
-        }
-
-        // --- FULLSCREEN & UI SETUP ---
-        function initGame() {
+        function initSystem() {
             const elem = document.documentElement;
             if (elem.requestFullscreen) elem.requestFullscreen();
             if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(()=>{});
-            
             document.getElementById('start-overlay').style.display = 'none';
-            if(!scene) init3D();
-            isRunning = true;
+            initParticles();
+            isSystemActive = true;
+        }
+
+        function updateScore(username, points) {
+            if (!topUsers[username]) topUsers[username] = { score: 0, name: username };
+            topUsers[username].score += points;
+            renderLeaderboard();
+        }
+
+        function renderLeaderboard() {
+            // Urutkan dari tertinggi ke terendah, ambil top 5
+            const sorted = Object.values(topUsers).sort((a, b) => b.score - a.score).slice(0, 5);
+            const container = document.getElementById('leaderboard-body');
+            
+            container.innerHTML = sorted.map((user, index) => {
+                let rankClass = index === 0 ? 'rank-1' : index === 1 ? 'rank-2' : index === 2 ? 'rank-3' : '';
+                let rankColor = index === 0 ? '#ffd700' : index === 1 ? '#c0c0c0' : index === 2 ? '#cd7f32' : '#888';
+                
+                return `
+                <div class="user-card ${rankClass}">
+                    <div class="user-info">
+                        <span class="user-rank" style="color:${rankColor}">#${index + 1}</span>
+                        <span class="user-name">@${user.name}</span>
+                    </div>
+                    <span class="user-score">${user.score.toLocaleString()} PT</span>
+                </div>
+                `;
+            }).join('');
         }
 
         function addLog(text, typeClass) {
-            const log = document.getElementById('notif-log');
+            const log = document.getElementById('log-content');
             const el = document.createElement('div');
-            el.className = `notif-item ${typeClass}`;
+            el.className = `log-item ${typeClass}`;
             el.innerHTML = text;
-            log.prepend(el);
-            if (log.children.length > 6) log.removeChild(log.lastChild); // Max 6 items
+            log.appendChild(el);
+            if (log.children.length > 7) log.removeChild(log.firstChild);
         }
 
-        // --- WEBSOCKETS (TIKTOK DATA) ---
+        // --- VISUAL ENGINE (CANVAS PARTICLES) ---
+        const canvas = document.getElementById('particle-canvas');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+
+        function resizeCanvas() {
+            canvas.width = document.getElementById('game-wrapper').clientWidth;
+            canvas.height = document.getElementById('game-wrapper').clientHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        class Particle {
+            constructor(x, y, color, speed, size) {
+                this.x = x; this.y = y; this.color = color;
+                this.vx = (Math.random() - 0.5) * speed;
+                this.vy = (Math.random() - 0.5) * speed;
+                this.life = 1.0; this.decay = Math.random() * 0.02 + 0.01;
+                this.size = size;
+            }
+            update() {
+                this.x += this.vx; this.y += this.vy; this.life -= this.decay;
+            }
+            draw() {
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+
+        function triggerExplosion(color, amount, speed, size) {
+            const x = canvas.width / 2 + (Math.random() * 200 - 100);
+            const y = canvas.height / 2 + (Math.random() * 100 - 50);
+            for(let i=0; i<amount; i++) particles.push(new Particle(x, y, color, speed, size));
+        }
+
+        function initParticles() {
+            requestAnimationFrame(animate);
+        }
+
+        function animate() {
+            if(!isSystemActive) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update(); particles[i].draw();
+                if (particles[i].life <= 0) particles.splice(i, 1);
+            }
+            requestAnimationFrame(animate);
+        }
+
+        // --- WEBSOCKET CONNECTION ---
         const ws = new WebSocket(`ws://${location.host}/ws`);
         ws.onmessage = (event) => {
-            if (!isRunning) return;
+            if (!isSystemActive) return;
             const data = JSON.parse(event.data);
             
             if (data.type === 'like') {
-                // Tembak 1 misil tiap ada notif like (bisa diatur)
-                fireMissile();
-                addLog(`🔥 <b>${data.user}</b> tap layar!`, 'notif-like');
+                updateScore(data.user, POINT_LIKE);
+                addLog(`[LIKE] <b>${data.user}</b> menembakkan laser!`, 'log-like');
+                triggerExplosion('#ff0050', 5, 5, 2); // Ledakan kecil
             } 
             else if (data.type === 'gift') {
-                // Tembak misil nuklir raksasa
-                fireMissile(true);
-                addLog(`🎁 <b>${data.user}</b> mengirim <b>${data.gift}</b>!`, 'notif-gift');
-            }
-            else if (data.type === 'share') {
-                addLog(`↗️ <b>${data.user}</b> membagikan Live!`, 'notif-share');
+                updateScore(data.user, POINT_GIFT);
+                addLog(`[GIFT] <b>${data.user}</b> mengirim ${data.gift}!`, 'log-gift');
+                triggerExplosion('#ffd700', 50, 15, 4); // Ledakan besar emas
             }
             else if (data.type === 'comment') {
-                addLog(`💬 <b>${data.user}</b>: ${data.text}`, '');
+                if (Math.random() > 0.8) {
+                    addLog(`[MSG] <b>${data.user}</b>: ${data.text}`, 'log-join');
+                }
             }
         };
-
-        // Window resize handler to maintain 4:3 safely
-        window.addEventListener('resize', () => {
-            if(camera && renderer) {
-                const container = document.getElementById('canvas-container');
-                renderer.setSize(container.clientWidth, container.clientHeight);
-            }
-        });
     </script>
 </body>
 </html>
@@ -278,22 +286,16 @@ async def broadcast(message: dict):
         try: await ws.send_text(msg_str)
         except: pass
 
-# --- TIKTOK EVENTS ---
 @client.on(ConnectEvent)
-async def on_connect(event: ConnectEvent):
-    print("Berhasil Terhubung ke TikTok Live!")
+async def on_connect(event: ConnectEvent): print("Terhubung ke TikTok!")
 
 @client.on(LikeEvent)
 async def on_like(event: LikeEvent):
-    await broadcast({"type": "like", "user": event.user.unique_id, "amount": event.likeCount})
+    await broadcast({"type": "like", "user": event.user.unique_id})
 
 @client.on(GiftEvent)
 async def on_gift(event: GiftEvent):
     await broadcast({"type": "gift", "user": event.user.unique_id, "gift": event.gift.info.name})
-
-@client.on(ShareEvent)
-async def on_share(event: ShareEvent):
-    await broadcast({"type": "share", "user": event.user.unique_id})
 
 @client.on(CommentEvent)
 async def on_comment(event: CommentEvent):
@@ -302,13 +304,10 @@ async def on_comment(event: CommentEvent):
 async def start_tiktok():
     while True:
         try: await client.start()
-        except Exception as e: 
-            print("Mencoba konek ulang...")
-            await asyncio.sleep(5)
+        except Exception: await asyncio.sleep(5)
 
 @app.on_event("startup")
 async def startup_event(): asyncio.create_task(start_tiktok())
 
 if __name__ == "__main__":
-    print("🔥 SERVER 3D CYBER WARFARE JALAN! Buka http://127.0.0.1:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
