@@ -1,236 +1,372 @@
-import threading
 import asyncio
-from flask import Flask, jsonify, request
+import random
+import json
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, Response
+import uvicorn
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import ConnectEvent, CommentEvent, LikeEvent, JoinEvent, ShareEvent, ViewerCountUpdateEvent
+from TikTokLive.events import ConnectEvent, DisconnectEvent, CommentEvent, LikeEvent, JoinEvent, ShareEvent, ViewerCountUpdateEvent
 
-# Konfigurasi
+# ==========================================
+# KONFIGURASI GAME & TIKTOK
+# ==========================================
 TIKTOK_USERNAME = "c_poek"
-PORT = 5000
+WORDS = ["TERMUX", "PYTHON", "GITHUB", "TIKTOK", "STREAMING", "DEVELOPER", "WEBSITE", "SERVER", "CODING", "PROGRAMMER"]
 
-app = Flask(__name__)
+app = FastAPI()
+
+class GameState:
+    def __init__(self):
+        self.word = ""
+        self.scrambled = ""
+        self.top_users = {} # Format: {"username": score}
+        self.stats = {"viewers": 0, "likes": 0, "shares": 0}
+        self.next_word()
+
+    def next_word(self):
+        self.word = random.choice(WORDS)
+        word_list = list(self.word)
+        random.shuffle(word_list)
+        self.scrambled = "".join(word_list)
+        
+    def guess(self, username: str, text: str) -> bool:
+        if text.strip().upper() == self.word:
+            if username in self.top_users:
+                self.top_users[username] += 10
+            else:
+                self.top_users[username] = 10
+            self.next_word()
+            return True
+        return False
+
+    def get_top_3(self):
+        sorted_users = sorted(self.top_users.items(), key=lambda x: x[1], reverse=True)[:3]
+        return [{"username": k, "score": v} for k, v in sorted_users]
+
+game = GameState()
+
+# ==========================================
+# WEBSOCKET MANAGER (KONEKSI FRONTEND)
+# ==========================================
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        await self.broadcast_game_state()
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, event_type: str, data: dict):
+        message = json.dumps({"type": event_type, "data": data})
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception:
+                pass
+
+    async def broadcast_game_state(self):
+        await self.broadcast("game_update", {
+            "scrambled": game.scrambled,
+            "top_users": game.get_top_3(),
+            "stats": game.stats
+        })
+
+manager = ConnectionManager()
 client = TikTokLiveClient(unique_id=TIKTOK_USERNAME)
 
-# State Management
-event_queue = []
-dashboard_state = {
-    "viewers": 0,
-    "likes": 0,
-    "joined": 0,
-    "shares": 0,
-    "comments": 0,
-    "status": "Menunggu Live..."
-}
-
-# --- TikTokLive Events ---
+# ==========================================
+# EVENT HANDLER TIKTOK LIVE
+# ==========================================
 @client.on(ConnectEvent)
 async def on_connect(event: ConnectEvent):
-    dashboard_state["status"] = f"Terhubung: {event.room_id}"
+    await manager.broadcast("system", {"message": f"Terhubung ke Live {TIKTOK_USERNAME}"})
+
+@client.on(DisconnectEvent)
+async def on_disconnect(event: DisconnectEvent):
+    await manager.broadcast("system", {"message": "Koneksi terputus. Standby menunggu Live..."})
 
 @client.on(ViewerCountUpdateEvent)
-async def on_viewer_count(event: ViewerCountUpdateEvent):
-    dashboard_state["viewers"] = event.viewer_count
+async def on_viewer_update(event: ViewerCountUpdateEvent):
+    game.stats["viewers"] = event.viewer_count
+    await manager.broadcast("stats_update", game.stats)
 
 @client.on(LikeEvent)
 async def on_like(event: LikeEvent):
-    dashboard_state["likes"] += event.like_count
-
-@client.on(JoinEvent)
-async def on_join(event: JoinEvent):
-    dashboard_state["joined"] += 1
+    game.stats["likes"] += event.like_count
+    await manager.broadcast("stats_update", game.stats)
 
 @client.on(ShareEvent)
 async def on_share(event: ShareEvent):
-    dashboard_state["shares"] += 1
+    game.stats["shares"] += 1
+    await manager.broadcast("stats_update", game.stats)
+    await manager.broadcast("notification", {"message": f"{event.user.nickname} membagikan Live!"})
+
+@client.on(JoinEvent)
+async def on_join(event: JoinEvent):
+    await manager.broadcast("notification", {"message": f"{event.user.nickname} bergabung."})
 
 @client.on(CommentEvent)
 async def on_comment(event: CommentEvent):
-    dashboard_state["comments"] += 1
-    event_queue.append({
-        "type": "comment",
-        "user": event.user.nickname,
-        "text": event.comment
-    })
+    username = event.user.nickname
+    comment = event.comment
+    
+    # Broadcast chat ke frontend
+    await manager.broadcast("chat", {"username": username, "comment": comment})
+    
+    # Cek logika tebak kata
+    if game.guess(username, comment):
+        await manager.broadcast("system", {"message": f"{username} berhasil menebak kata!"})
+        await manager.broadcast_game_state()
 
-def start_tiktok_client():
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(client.start())
-    except Exception as e:
-        print(f"Error TikTokLive: {e}")
+# ==========================================
+# BACKGROUND TASK (STANDBY MODE)
+# ==========================================
+async def start_tiktok_client():
+    while True:
+        try:
+            await client.start()
+        except Exception as e:
+            # Standby mode jika offline/error, retry setiap 10 detik
+            await asyncio.sleep(10)
 
-# --- Web & PWA Routes ---
-@app.route('/')
-def index():
-    return """<!DOCTYPE html>
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(start_tiktok_client())
+
+# ==========================================
+# FRONTEND STRINGS (HTML, CSS, JS, PWA)
+# ==========================================
+MANIFEST_JSON = """
+{
+  "name": "TikTok Live Game",
+  "short_name": "TTGame",
+  "start_url": "/",
+  "display": "fullscreen",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [{
+    "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI1MCIgZmlsbD0iIzM0OTg=","sizes": "192x192","type": "image/svg+xml"
+  }]
+}
+"""
+
+SERVICE_WORKER_JS = """
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open('ttgame-v1').then((cache) => cache.addAll(['/'])));
+});
+self.addEventListener('fetch', (e) => {
+  e.respondWith(caches.match(e.request).then((response) => response || fetch(e.request)));
+});
+"""
+
+HTML_CONTENT = """
+<!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Game PWA</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TikTok Live Game - Tebak Kata</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background-color: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; font-family: 'Segoe UI', sans-serif; color: #f8fafc; overflow: hidden; }
-        #app-container { aspect-ratio: 4 / 3; width: 100%; max-height: 100vh; max-width: calc(100vh * (4/3)); background: #1e293b; box-shadow: 0 0 20px rgba(0,0,0,0.8); display: flex; flex-direction: column; overflow: hidden; position: relative; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: #000; display: flex; justify-content: center; align-items: center; height: 100vh; color: #fff; overflow: hidden; }
         
-        /* Header / Dashboard */
-        .dashboard { display: grid; grid-template-columns: repeat(6, 1fr); background: #0f172a; padding: 10px; border-bottom: 2px solid #334155; text-align: center; font-size: 14px; font-weight: bold; }
-        .stat-box { display: flex; flex-direction: column; align-items: center; justify-content: center; border-right: 1px solid #334155; }
-        .stat-box:last-child { border-right: none; }
-        .stat-box i { font-size: 18px; margin-bottom: 5px; color: #38bdf8; }
-        .stat-box span { color: #94a3b8; font-size: 12px; }
+        #app-container {
+            width: 100%;
+            max-width: 100vw;
+            aspect-ratio: 4 / 3;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            position: relative;
+            display: grid;
+            grid-template-columns: 3fr 1fr;
+            grid-template-rows: auto 1fr;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
 
-        /* Main Game Area */
-        .game-area { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative; }
-        .word-display { font-size: 50px; letter-spacing: 15px; font-weight: bold; color: #fbbf24; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); margin-bottom: 20px; }
-        .question-text { font-size: 20px; color: #94a3b8; margin-bottom: 30px; }
-        .status-bar { position: absolute; bottom: 10px; left: 10px; font-size: 12px; color: #22c55e; }
+        /* HEADER / STATS */
+        header { grid-column: 1 / 3; background: rgba(0,0,0,0.5); padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #334155; }
+        .stats-group { display: flex; gap: 20px; }
+        .stat-item { display: flex; align-items: center; gap: 8px; font-size: 1.1rem; font-weight: bold; }
+        .stat-item i { color: #38bdf8; }
+        
+        /* FULLSCREEN BTN */
+        #fs-btn { background: #38bdf8; color: #000; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        #fs-btn:hover { background: #0ea5e9; }
 
-        /* Leaderboard */
-        .leaderboard { position: absolute; top: 10px; right: 10px; background: rgba(15, 23, 42, 0.8); padding: 10px; border-radius: 8px; width: 220px; border: 1px solid #334155; }
-        .leaderboard h3 { font-size: 14px; text-transform: uppercase; border-bottom: 1px solid #334155; padding-bottom: 5px; margin-bottom: 5px; text-align: center; color: #f43f5e; }
-        .top-user { display: flex; justify-content: space-between; font-size: 14px; margin: 5px 0; }
-        .username { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
-        .score { font-weight: bold; color: #fbbf24; }
+        /* GAME AREA */
+        .game-area { display: flex; flex-direction: column; justify-content: center; align-items: center; border-right: 2px solid #334155; position: relative; }
+        .scrambled-word { font-size: 4rem; letter-spacing: 15px; font-weight: 900; color: #fbbf24; text-shadow: 2px 2px 10px rgba(0,0,0,0.5); margin-bottom: 20px; }
+        .instruction { font-size: 1.5rem; color: #94a3b8; }
+
+        /* NOTIFICATIONS */
+        .log-container { position: absolute; bottom: 20px; left: 20px; right: 20px; height: 60px; overflow: hidden; }
+        .log-item { background: rgba(56, 189, 248, 0.2); border-left: 4px solid #38bdf8; padding: 8px 15px; margin-bottom: 5px; border-radius: 4px; animation: fadeOut 4s forwards; }
+        @keyframes fadeOut { 0% { opacity: 1; transform: translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-10px); } }
+
+        /* SIDEBAR (TOP USERS & CHAT) */
+        .sidebar { display: flex; flex-direction: column; background: rgba(0,0,0,0.3); }
+        .top-users { padding: 15px; border-bottom: 2px solid #334155; height: 35%; overflow: hidden; }
+        .section-title { font-size: 1rem; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
+        .user-row { display: flex; justify-content: space-between; align-items: center; background: #1e293b; padding: 8px 10px; margin-bottom: 8px; border-radius: 5px; }
+        .user-name { max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: bold; }
+        .user-score { color: #fbbf24; font-weight: bold; }
+
+        .chat-container { padding: 15px; flex-grow: 1; overflow-y: hidden; display: flex; flex-direction: column; }
+        .chat-list { flex-grow: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; scrollbar-width: none; }
+        .chat-list::-webkit-scrollbar { display: none; }
+        .chat-msg { background: #0f172a; padding: 8px; border-radius: 5px; font-size: 0.95rem; line-height: 1.3; }
+        .chat-author { color: #a3e635; font-weight: bold; }
     </style>
 </head>
 <body>
-    <div id="app-container">
-        <div class="dashboard">
-            <div class="stat-box"><i class="fas fa-eye"></i><div id="val-viewers">0</div><span>Penonton</span></div>
-            <div class="stat-box"><i class="fas fa-user-plus"></i><div id="val-joined">0</div><span>Bergabung</span></div>
-            <div class="stat-box"><i class="fas fa-heart"></i><div id="val-likes">0</div><span>Likes</span></div>
-            <div class="stat-box"><i class="fas fa-comment"></i><div id="val-comments">0</div><span>Komentar</span></div>
-            <div class="stat-box"><i class="fas fa-share"></i><div id="val-shares">0</div><span>Share</span></div>
-            <div class="stat-box"><i class="fas fa-signal"></i><div id="val-status">Standby</div><span>Status</span></div>
+
+<div id="app-container">
+    <header>
+        <div class="stats-group">
+            <div class="stat-item"><i class="fa-solid fa-eye"></i> <span id="val-viewers">0</span></div>
+            <div class="stat-item"><i class="fa-solid fa-heart"></i> <span id="val-likes">0</span></div>
+            <div class="stat-item"><i class="fa-solid fa-share"></i> <span id="val-shares">0</span></div>
         </div>
+        <button id="fs-btn"><i class="fa-solid fa-expand"></i> Layar Penuh</button>
+    </header>
 
-        <div class="game-area">
-            <div class="leaderboard">
-                <h3><i class="fas fa-trophy"></i> Top 3 Users</h3>
-                <div id="lb-content"></div>
-            </div>
-            
-            <div class="question-text"><i class="fas fa-gamepad"></i> Tebak Kata di Komentar!</div>
-            <div class="word-display" id="word-display">_ _ _ _ _</div>
-            <div class="status-bar"><i class="fas fa-circle-check"></i> Real-time Active</div>
+    <main class="game-area">
+        <div class="scrambled-word" id="word-display">MEMUAT</div>
+        <div class="instruction">Tebak kata dari susunan huruf di atas!</div>
+        <div class="log-container" id="log-list"></div>
+    </main>
+
+    <aside class="sidebar">
+        <div class="top-users">
+            <div class="section-title"><i class="fa-solid fa-trophy"></i> Top 3 Penebak</div>
+            <div id="top-users-list">
+                </div>
         </div>
-    </div>
+        <div class="chat-container">
+            <div class="section-title"><i class="fa-solid fa-comments"></i> Live Chat</div>
+            <div class="chat-list" id="chat-list">
+                </div>
+        </div>
+    </aside>
+</div>
 
-    <script>
-        // Registrasi Service Worker untuk PWA
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js').catch(err => console.error(err));
-        }
-
-        const databaseKata = ["GITHUB", "TERMUX", "WEBSITE", "PROGRAMMER", "INTERNET", "KOMPUTER", "APLIKASI", "SERVER"];
-        let kataRahasia = "";
-        let kataTebakan = [];
-        let skorUser = {};
-
-        function pilihKataBaru() {
-            kataRahasia = databaseKata[Math.floor(Math.random() * databaseKata.length)];
-            let arrayTebakan = [];
-            for (let i = 0; i < kataRahasia.length; i++) {
-                // Tampilkan huruf pertama, terakhir, atau acak. Sisanya underscore
-                if (i === 0 || i === kataRahasia.length - 1 || Math.random() > 0.6) {
-                    arrayTebakan.push(kataRahasia[i]);
-                } else {
-                    arrayTebakan.push("_");
-                }
-            }
-            if (!arrayTebakan.includes("_")) arrayTebakan[1] = "_"; // Wajib ada huruf hilang
-            kataTebakan = arrayTebakan;
-            document.getElementById('word-display').innerText = kataTebakan.join(" ");
-        }
-
-        function updateLeaderboard() {
-            const sortedUsers = Object.entries(skorUser).sort((a, b) => b[1] - a[1]).slice(0, 3);
-            let html = "";
-            sortedUsers.forEach((user, index) => {
-                let medal = index === 0 ? '<i class="fas fa-medal" style="color:gold"></i> ' : 
-                            index === 1 ? '<i class="fas fa-medal" style="color:silver"></i> ' : 
-                                          '<i class="fas fa-medal" style="color:#cd7f32"></i> ';
-                html += `<div class="top-user">${medal}<span class="username">${user[0]}</span> <span class="score">${user[1]}</span></div>`;
-            });
-            document.getElementById('lb-content').innerHTML = html;
-        }
-
-        async function fetchEvents() {
-            try {
-                const res = await fetch('/api/data');
-                const data = await res.json();
-                
-                // Update Dashboard
-                document.getElementById('val-viewers').innerText = data.state.viewers;
-                document.getElementById('val-joined').innerText = data.state.joined;
-                document.getElementById('val-likes').innerText = data.state.likes;
-                document.getElementById('val-comments').innerText = data.state.comments;
-                document.getElementById('val-shares').innerText = data.state.shares;
-                document.getElementById('val-status').innerText = "Live";
-                
-                // Cek Jawaban dari Komentar
-                data.events.forEach(ev => {
-                    if (ev.type === "comment") {
-                        if (ev.text.toUpperCase() === kataRahasia.toUpperCase()) {
-                            if (!skorUser[ev.user]) skorUser[ev.user] = 0;
-                            skorUser[ev.user] += 10;
-                            updateLeaderboard();
-                            pilihKataBaru();
-                        }
-                    }
-                });
-            } catch (e) {
-                console.log("Koneksi polling terputus, mencoba lagi...");
-            }
-        }
-
-        pilihKataBaru();
-        setInterval(fetchEvents, 1000); // Polling setiap detik (Real-time standby)
-    </script>
-</body>
-</html>"""
-
-@app.route('/api/data')
-def api_data():
-    global event_queue
-    data_to_send = list(event_queue)
-    event_queue.clear()
-    return jsonify({
-        "state": dashboard_state,
-        "events": data_to_send
-    })
-
-@app.route('/manifest.json')
-def manifest():
-    manifest_data = {
-        "name": "Live Interactive Game",
-        "short_name": "LiveGame",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#0f172a",
-        "theme_color": "#1e293b",
-        "icons": [{
-            "src": "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/svgs/solid/gamepad.svg",
-            "sizes": "192x192",
-            "type": "image/svg+xml"
-        }]
+<script>
+    // PWA Setup
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js');
     }
-    return jsonify(manifest_data)
 
-@app.route('/sw.js')
-def service_worker():
-    return """
-self.addEventListener('install', (e) => { self.skipWaiting(); });
-self.addEventListener('activate', (e) => { e.waitUntil(clients.claim()); });
-self.addEventListener('fetch', (e) => { e.respondWith(fetch(e.request)); });
-""", 200, {'Content-Type': 'application/javascript'}
+    // Fullscreen Logic
+    const appContainer = document.getElementById('app-container');
+    document.getElementById('fs-btn').addEventListener('click', () => {
+        if (!document.fullscreenElement) {
+            appContainer.requestFullscreen().catch(err => console.log(err));
+        } else {
+            document.exitFullscreen();
+        }
+    });
 
-if __name__ == '__main__':
-    # Jalankan TikTok Listener di Background Thread
-    threading.Thread(target=start_tiktok_client, daemon=True).start()
-    # Jalankan Web Server
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    // WebSocket Logic
+    let ws;
+    function connectWS() {
+        ws = new WebSocket(`ws://${location.host}/ws`);
+        
+        ws.onmessage = (event) => {
+            const res = JSON.parse(event.data);
+            
+            if (res.type === 'game_update') {
+                document.getElementById('word-display').innerText = res.data.scrambled;
+                updateStats(res.data.stats);
+                updateTopUsers(res.data.top_users);
+            } 
+            else if (res.type === 'stats_update') {
+                updateStats(res.data);
+            }
+            else if (res.type === 'chat') {
+                addChat(res.data.username, res.data.comment);
+            }
+            else if (res.type === 'notification' || res.type === 'system') {
+                addLog(res.data.message);
+            }
+        };
+
+        ws.onclose = () => {
+            setTimeout(connectWS, 3000); // Reconnect standby
+        };
+    }
+
+    function updateStats(stats) {
+        document.getElementById('val-viewers').innerText = stats.viewers;
+        document.getElementById('val-likes').innerText = stats.likes;
+        document.getElementById('val-shares').innerText = stats.shares;
+    }
+
+    function updateTopUsers(users) {
+        const container = document.getElementById('top-users-list');
+        container.innerHTML = '';
+        users.forEach(u => {
+            container.innerHTML += `
+                <div class="user-row">
+                    <span class="user-name">${u.username}</span>
+                    <span class="user-score">${u.score} Pts</span>
+                </div>
+            `;
+        });
+    }
+
+    function addChat(username, comment) {
+        const list = document.getElementById('chat-list');
+        const div = document.createElement('div');
+        div.className = 'chat-msg';
+        div.innerHTML = `<span class="chat-author">${username}:</span> <span class="chat-text">${comment}</span>`;
+        list.appendChild(div);
+        if (list.childElementCount > 30) list.removeChild(list.firstChild);
+        list.scrollTop = list.scrollHeight;
+    }
+
+    function addLog(msg) {
+        const list = document.getElementById('log-list');
+        const div = document.createElement('div');
+        div.className = 'log-item';
+        div.innerHTML = `<i class="fa-solid fa-bell"></i> ${msg}`;
+        list.appendChild(div);
+        setTimeout(() => { if(div.parentNode) div.remove(); }, 4000);
+    }
+
+    connectWS();
+</script>
+</body>
+</html>
+"""
+
+# ==========================================
+# ENDPOINTS FASTAPI
+# ==========================================
+@app.get("/")
+async def get_index():
+    return HTMLResponse(content=HTML_CONTENT)
+
+@app.get("/manifest.json")
+async def get_manifest():
+    return Response(content=MANIFEST_JSON, media_type="application/json")
+
+@app.get("/sw.js")
+async def get_sw():
+    return Response(content=SERVICE_WORKER_JS, media_type="application/javascript")
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text() # Keep-alive
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, log_level="info")
