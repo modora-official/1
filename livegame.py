@@ -11,7 +11,7 @@ app = FastAPI()
 client = TikTokLiveClient(unique_id="@c_poek")
 connected_websockets = set()
 
-# --- PWA CONFIGURATION ---
+# --- CONFIGURATION PWA (INSTALLABLE) ---
 @app.get("/manifest.json")
 async def get_manifest():
     manifest = {
@@ -22,7 +22,14 @@ async def get_manifest():
         "orientation": "landscape",
         "background_color": "#111111",
         "theme_color": "#ff0050",
-        "icons": [{"src": "/icon.svg", "sizes": "192x192 512x512", "type": "image/svg+xml", "purpose": "any maskable"}]
+        "icons": [
+            {
+                "src": "/icon.svg",
+                "sizes": "192x192 512x512",
+                "type": "image/svg+xml",
+                "purpose": "any maskable"
+            }
+        ]
     }
     return JSONResponse(manifest)
 
@@ -121,7 +128,7 @@ HTML_CONTENT = """
         /* Bottom Controls/Info */
         .footer {
             height: 15%; background: linear-gradient(to top, #000, transparent);
-            display: flex; justify-content: center; align-items: center; flex-direction: column; z-index: 10;
+            display: flex; justify(center); align-items: center; flex-direction: column; z-index: 10;
         }
         .instruction { font-size: 1.8rem; font-weight: 900; }
         .instruction span.kiri { color: #00e5ff; }
@@ -317,15 +324,9 @@ async def on_comment(event: CommentEvent):
 
 async def start_tiktok():
     try:
-        # Loop agar tidak crash saat TikTok offline
-        while True:
-            try:
-                await client.start()
-            except Exception as e:
-                print(f"Mencoba konek ulang ke TikTok... ({e})")
-                await asyncio.sleep(5)
-    except Exception:
-        pass
+        await client.start()
+    except Exception as e:
+        print(f"Gagal konek ke TikTok (c_poek mungkin offline): {e}")
 
 @app.on_event("startup")
 async def startup_event():
